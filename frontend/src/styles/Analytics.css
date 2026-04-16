@@ -1,0 +1,14 @@
+.analytics-container {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.analytics-container h1 {
+  margin-bottom: 2rem;
+  color: #1a1a1a;
+}
+
+.analytics-container p {
+  color: #666;
+  font-size: 1.1rem;
+}
