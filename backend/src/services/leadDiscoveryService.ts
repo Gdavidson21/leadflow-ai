@@ -1,6 +1,7 @@
 import { query } from '../config/database';
 import * as leadsService from './leadsService';
 import axios from 'axios';
+import { INDUSTRIES } from '../industries';
 
 export interface LeadDiscoveryCriteria {
   industry?: string;
@@ -94,6 +95,23 @@ const MOCK_LEADS_DATABASE: DiscoveredLead[] = [
 ];
 
 /**
+ * Expand industry name to list of companies
+ * If keyword is "hospitality", returns all hospitality companies
+ * If keyword is a company name, returns just that company
+ */
+function expandIndustryToCompanies(keyword: string): string[] {
+  const lowerKeyword = keyword.toLowerCase().trim();
+  
+  // Check if keyword is an industry we recognize
+  if (INDUSTRIES[lowerKeyword as keyof typeof INDUSTRIES]) {
+    return INDUSTRIES[lowerKeyword as keyof typeof INDUSTRIES];
+  }
+  
+  // Otherwise treat it as a single company name
+  return [keyword];
+}
+
+/**
  * Search for leads matching the given criteria
  * Integrates with Hunter.io API for real lead data
  * Falls back to mock data if API key is not configured
@@ -124,49 +142,62 @@ async function searchLeadsFromHunterIo(
   criteria: LeadDiscoveryCriteria,
   apiKey: string
 ): Promise<DiscoveredLead[]> {
-  try {
-    // Use keywords to search domain (first keyword as domain search)
-    let domain = criteria.keywords?.[0]?.toLowerCase() || 'example.com';
-    
-    // Add .com if not already a full domain
-    if (!domain.includes('.')) {
-      domain = domain + '.com';
+  // Start with an empty list to collect all leads
+  const allLeads: DiscoveredLead[] = [];
+  
+  // STEP 1: Expand industry to companies
+  // If user typed "hospitality", this returns ['marriott', 'hilton', ...]
+  // If user typed "google", this returns ['google']
+  const companies = expandIndustryToCompanies(criteria.keywords?.[0] || 'example.com');
+  
+  // STEP 2: Loop through each company
+  // This loop will run once for each company in the list
+  for (const company of companies) {
+    try {
+      // Build the domain: 'marriott' → 'marriott.com'
+      let domain = company.toLowerCase();
+      if (!domain.includes('.')) {
+        domain = domain + '.com';
+      }
+      
+      console.log(`Searching Hunter.io for domain: ${domain}`);
+      
+      // Make the API call to Hunter.io for THIS company
+      const response = await axios.get('https://api.hunter.io/v2/domain-search', {
+        params: {
+          domain: domain,
+          limit: criteria.limit || 10,
+        },
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
+      });
+      
+      // Get leads from this company
+      const hunterLeads = response.data.data.emails || [];
+      
+      // Transform them to our format
+      const leads: DiscoveredLead[] = hunterLeads
+        .map((email: any) => ({
+          email: email.value,
+          first_name: email.first_name || 'Unknown',
+          last_name: email.last_name || 'User',
+          company: domain,
+          phone: email.phone_number || undefined,
+        }))
+        .filter((lead: any) => lead.email);
+      
+      // ADD these leads to our growing list
+      allLeads.push(...leads);
+      
+    } catch (error) {
+      // If one company fails, continue to the next one
+      console.error(`Error searching ${company}:`, error);
     }
-    
-    console.log(`Searching Hunter.io for domain: ${domain}`);
-
-    const response = await axios.get('https://api.hunter.io/v2/domain-search', {
-      params: {
-        domain: domain,
-        limit: criteria.limit || 10,
-      },
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-      },
-    });
-
-    const hunterLeads = response.data.data.emails || [];
-    console.log(`Found ${hunterLeads.length} leads from Hunter.io`);
-
-    // Transform Hunter.io response to DiscoveredLead format
-    const leads: DiscoveredLead[] = hunterLeads
-      .map((email: any) => ({
-        email: email.value,
-        first_name: email.first_name || 'Unknown',
-        last_name: email.last_name || 'User',
-        company: domain,
-        phone: email.phone_number || undefined,
-      }))
-      .filter((lead: any) => lead.email); // Remove empty emails
-
-    // Apply additional filters
-    return applyFilters(leads, criteria);
-  } catch (error: any) {
-    if (error.response?.status === 401) {
-      console.error('Hunter.io API key invalid or expired');
-    }
-    throw error;
   }
+  
+  // STEP 3: Return all collected leads
+  return applyFilters(allLeads, criteria);
 }
 
 /**
